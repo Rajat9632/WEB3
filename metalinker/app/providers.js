@@ -1,81 +1,62 @@
 "use client";
-
 import React from "react";
 
-// --- Wagmi v1 Imports ---
-import { createWeb3Modal, defaultWagmiConfig } from "@web3modal/wagmi/react";
-import { WagmiConfig } from "wagmi";
-// We no longer import any chain from wagmi/chains or viem/chains
+// Wagmi (v2) / Web3Modal (v5) Imports
+import { createWeb3Modal } from "@web3modal/wagmi/react";
+import { WagmiProvider, createConfig, http } from "wagmi";
+import { polygon } from "wagmi/chains";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+// XMTP Import
 import dynamic from "next/dynamic";
 
-// --- XMTP Import ---
+// Dynamically load the XMTP provider wrapper to prevent SSR issues
 const XmtpProviderWrapper = dynamic(
   () => import("./xmtp-provider-wrapper"),
-  { ssr: false } // No Server-Side Rendering.
+  { ssr: false }
 );
 
+// 1. Create a QueryClient
 const queryClient = new QueryClient();
 
-// --- 1. MANUALLY DEFINE POLYGON AMOY ---
-// This is the fix, because Wagmi v1 doesn't know about Amoy.
-const polygonAmoy = {
-  id: 80002,
-  name: "Polygon Amoy",
-  nativeCurrency: { name: "MATIC", symbol: "MATIC", decimals: 18 },
-  rpcUrls: {
-    default: { http: ["https://rpc-amoy.polygon.technology/"] },
-    public: { http: ["https://rpc-amoy.polygon.technology/"] },
-  },
-  blockExplorers: {
-    default: { name: "Amoy PolygonScan", url: "https://amoy.polygonscan.com" },
-  },
-  testnet: true,
-};
-// --- END OF FIX ---
-
-// 2. Get your Project ID from https://cloud.walletconnect.com
-let projectId = "10ee6ea02a86486f499e6d7ca094d2b8"; // Get this from https://cloud.walletconnect.com/
-if (!projectId || projectId === "10ee6ea02a86486f499e6d7ca094d2b8") {
-  // Try to get it from environment variables
-  const envProjectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
-  if (envProjectId) {
-    projectId = envProjectId;
-  } else {
-    // Fallback alert for development
-    alert("Please add YOUR_WALLETCONNECT_PROJECT_ID to app/providers.js");
-    throw new Error("YOUR_WALLETCONNECT_PROJECT_ID is not set in providers.js");
-  }
+// 2. Get Project ID
+let projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || "";
+if (!projectId && typeof window !== "undefined") {
+  // Only show alert in browser
+  console.warn("Please add NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID to .env.local");
 }
 
+// 3. Create WAGMI config
 const metadata = {
   name: "Web3 Messenger",
-  description: "A decentralized, user-owned messaging network",
-  url: "http://localhost:3000",
+  description: "A decentralized messaging network",
+  url: "http://localhost:3000", // Your local dev URL
   icons: ["https://avatars.githubusercontent.com/u/37784886"],
 };
 
-// 3. Use our manually defined chain
-const chains = [polygonAmoy];
-
-// 4. Create Wagmi v1 config
-const wagmiConfig = defaultWagmiConfig({
+const chains = [polygon];
+const wagmiConfig = createConfig({
   chains,
-  projectId,
+  transports: {
+    // Use the Alchemy API key from .env.local, or fallback to public RPC
+    [polygon.id]: http(process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || 'https://polygon-rpc.com'),
+  },
+  projectId: projectId || 'default-project-id', // Fallback to prevent errors
   metadata,
 });
 
-// 5. Create Web3Modal
-createWeb3Modal({ wagmiConfig, projectId, chains });
+// 4. Create Web3Modal (only if projectId exists)
+if (projectId && projectId !== 'default-project-id') {
+  createWeb3Modal({ wagmiConfig, projectId, chains });
+}
 
-// 6. Main Providers Component
+// 5. Create the main Providers component
 export function Providers({ children }) {
   return (
-    // v1 uses <WagmiConfig>
-    <WagmiConfig config={wagmiConfig}>
+    <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
         <XmtpProviderWrapper>{children}</XmtpProviderWrapper>
       </QueryClientProvider>
-    </WagmiConfig>
+    </WagmiProvider>
   );
 }
