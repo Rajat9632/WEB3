@@ -34,12 +34,29 @@ const metadata = {
   icons: ["https://avatars.githubusercontent.com/u/37784886"],
 };
 
+// Helper function to get Polygon RPC URL
+const getPolygonRpcUrl = () => {
+  const apiKey = process.env.NEXT_PUBLIC_ALCHEMY_API_KEY;
+  
+  // If it's already a full URL, use it
+  if (apiKey && (apiKey.startsWith('http://') || apiKey.startsWith('https://'))) {
+    return apiKey;
+  }
+  
+  // If it's just an API key, construct the URL
+  if (apiKey && !apiKey.includes('://')) {
+    return `https://polygon-mainnet.g.alchemy.com/v2/${apiKey}`;
+  }
+  
+  // Fallback to public RPC
+  return 'https://polygon-rpc.com';
+};
+
 const chains = [polygon];
 const wagmiConfig = createConfig({
   chains,
   transports: {
-    // Use the Alchemy API key from .env.local, or fallback to public RPC
-    [polygon.id]: http(process.env.NEXT_PUBLIC_ALCHEMY_API_KEY || 'https://polygon-rpc.com'),
+    [polygon.id]: http(getPolygonRpcUrl()),
   },
   projectId: projectId || 'default-project-id', // Fallback to prevent errors
   metadata,

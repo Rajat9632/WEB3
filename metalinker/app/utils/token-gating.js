@@ -2,9 +2,27 @@
 import { createPublicClient, http, formatUnits } from 'viem';
 import { polygon } from 'viem/chains';
 
+// Helper function to get Polygon RPC URL
+const getPolygonRpcUrl = () => {
+  const apiKey = process.env.NEXT_PUBLIC_ALCHEMY_API_KEY;
+  
+  // If it's already a full URL, use it
+  if (apiKey && (apiKey.startsWith('http://') || apiKey.startsWith('https://'))) {
+    return apiKey;
+  }
+  
+  // If it's just an API key, construct the URL
+  if (apiKey && !apiKey.includes('://')) {
+    return `https://polygon-mainnet.g.alchemy.com/v2/${apiKey}`;
+  }
+  
+  // Fallback to public RPC
+  return 'https://polygon-rpc.com';
+};
+
 const publicClient = createPublicClient({
   chain: polygon,
-  transport: http(process.env.NEXT_PUBLIC_ALCHEMY_API_KEY),
+  transport: http(getPolygonRpcUrl()),
 });
 
 // ERC721 (NFT) balance check

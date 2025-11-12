@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState, useRef } from "react";
 import { Client } from "@xmtp/browser-sdk";
-import { useWalletClient, useAccount, useConnect, useDisconnect, useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
+import { useWalletClient, useAccount, useDisconnect, useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
+import { useWeb3Modal } from "@web3modal/wagmi/react";
 import { parseEther } from "viem";
 import { resolveENS, reverseResolveENS } from "../utils/ens";
 import { uploadToIPFS, downloadFromIPFS, extractIPFSHash } from "../utils/ipfs";
@@ -14,8 +15,28 @@ import VideoCall from "./VideoCall";
 export default function Messenger() {
   const { data: walletClient } = useWalletClient();
   const { address, isConnected } = useAccount();
-  const { connect, connectors, error: connectError, isPending: isConnecting } = useConnect();
+  const { open } = useWeb3Modal();
   const { disconnect } = useDisconnect();
+  
+  // Handle connect button click
+  const handleConnect = async () => {
+    try {
+      await open();
+    } catch (error) {
+      console.error("Error opening Web3Modal:", error);
+      // Fallback: try to connect directly via MetaMask if Web3Modal fails
+      if (window.ethereum) {
+        try {
+          await window.ethereum.request({ method: 'eth_requestAccounts' });
+        } catch (e) {
+          console.error("Error connecting to MetaMask:", e);
+          alert("Failed to connect wallet. Please make sure MetaMask is installed and NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set in .env.local");
+        }
+      } else {
+        alert("Please install MetaMask or set NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID in .env.local");
+      }
+    }
+  };
   const { sendTransaction, data: txHash, isPending: isSendingTx } = useSendTransaction();
   const { isLoading: isConfirmingTx, isSuccess: isTxSuccess } = useWaitForTransactionReceipt({ hash: txHash });
 
@@ -50,9 +71,43 @@ export default function Messenger() {
       setStatus("initializing");
       setError(null);
       try {
-        const signer = createXmtpSignerFromWalletClient(walletClient);
         // Use 'dev' for testing, 'production' for mainnet
-        const xmtp = await Client.create(signer, { env: process.env.NEXT_PUBLIC_XMTP_ENV || "dev" });
+        // IMPORTANT: Users on 'dev' can only message other 'dev' users
+        const xmtpEnv = process.env.NEXT_PUBLIC_XMTP_ENV || "dev";
+        console.log("Initializing XMTP with environment:", xmtpEnv);
+        console.log("Make sure you SIGN the message in your wallet when prompted!");
+        
+        // Verify walletClient is valid
+        if (!walletClient) {
+          throw new Error("Wallet client not available. Please connect your wallet first.");
+        }
+        
+        // Try walletClient directly first (simpler, might work better)
+        let xmtp;
+        try {
+          console.log("🔄 Attempting to use walletClient directly (simpler approach)...");
+          xmtp = await Client.create(walletClient, { env: xmtpEnv });
+          console.log("✅ XMTP client created successfully with walletClient directly!");
+        } catch (directError) {
+          console.warn("⚠️ Direct walletClient approach failed, trying custom signer...", directError);
+          
+          // Fallback to custom signer
+          const signer = createXmtpSignerFromWalletClient(walletClient);
+          
+          if (!signer) {
+            throw new Error("Failed to create signer. Please check wallet connection.");
+          }
+          
+          if (!signer.getIdentifier || typeof signer.getIdentifier !== 'function') {
+            throw new Error("Signer missing getIdentifier method. Please check wallet connection.");
+          }
+          if (!signer.signMessage || typeof signer.signMessage !== 'function') {
+            throw new Error("Signer missing signMessage method. Please check wallet connection.");
+          }
+          
+          console.log("Signer created successfully, initializing XMTP client...");
+          xmtp = await Client.create(signer, { env: xmtpEnv });
+        }
         
         if (cancelled) {
           try { await xmtp.shutdown?.(); } catch {}
@@ -308,18 +363,12 @@ export default function Messenger() {
                 Disconnect
               </button>
             ) : (
-              <div className="flex gap-2">
-                {connectors.map((c) => (
-                  <button
-                    key={c.uid || c.id}
-                    onClick={() => connect({ connector: c })}
-                    disabled={!c.ready || isConnecting}
-                    className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-4 py-2 rounded"
-                  >
-                    Connect {c.name}
-                  </button>
-                ))}
-              </div>
+              <button
+                onClick={handleConnect}
+                className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded"
+              >
+                Connect Wallet
+              </button>
             )}
           </div>
         </div>
@@ -331,6 +380,12 @@ export default function Messenger() {
           <div className="flex-grow flex items-center justify-center">
             <div className="text-center">
               <p className="text-xl text-gray-400 mb-4">Please connect your wallet to begin</p>
+              <button
+                onClick={handleConnect}
+                className="bg-indigo-600 hover:bg-indigo-700 px-6 py-3 rounded-lg text-lg font-semibold"
+              >
+                Connect Wallet
+              </button>
             </div>
           </div>
         ) : status === "initializing" ? (

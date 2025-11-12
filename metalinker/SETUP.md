@@ -12,7 +12,10 @@
    Copy the template below and fill in your API keys:
    ```env
    NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=your_project_id_here
-   NEXT_PUBLIC_ALCHEMY_API_KEY=https://polygon-mainnet.g.alchemy.com/v2/your_key_here
+   # Alchemy API Key - you can use either format:
+   # Full URL: https://polygon-mainnet.g.alchemy.com/v2/your_key_here
+   # Or just the key: your_key_here
+   NEXT_PUBLIC_ALCHEMY_API_KEY=your_key_here
    NEXT_PUBLIC_PINATA_JWT=your_pinata_jwt_here
    NEXT_PUBLIC_PINATA_GATEWAY=https://gateway.pinata.cloud/ipfs/
    NEXT_PUBLIC_XMTP_ENV=dev
@@ -29,7 +32,10 @@
    - Go to https://www.alchemy.com
    - Create an account
    - Create a new app on Polygon Mainnet
-   - Copy the HTTP URL (full URL, not just the key)
+   - Copy either:
+     - The full HTTP URL: `https://polygon-mainnet.g.alchemy.com/v2/your_key`
+     - Or just the API key part: `your_key`
+   - Both formats will work!
 
    **Pinata JWT:**
    - Go to https://pinata.cloud

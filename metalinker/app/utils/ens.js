@@ -6,14 +6,19 @@ import { mainnet } from 'viem/chains';
 // Note: ENS names resolve on Ethereum mainnet, not Polygon
 const getPublicClient = () => {
   const apiKey = process.env.NEXT_PUBLIC_ALCHEMY_API_KEY;
-  // If API key is for Polygon, try to extract and use for Ethereum
   let ethRpcUrl = 'https://eth-mainnet.g.alchemy.com/v2/demo';
   
-  if (apiKey && apiKey.includes('alchemy.com')) {
-    // Extract API key from Polygon URL and use for Ethereum
-    const match = apiKey.match(/v2\/([^/]+)/);
-    if (match) {
-      ethRpcUrl = `https://eth-mainnet.g.alchemy.com/v2/${match[1]}`;
+  if (apiKey) {
+    // If it's a full URL, extract the key
+    if (apiKey.includes('alchemy.com')) {
+      const match = apiKey.match(/v2\/([^/]+)/);
+      if (match) {
+        ethRpcUrl = `https://eth-mainnet.g.alchemy.com/v2/${match[1]}`;
+      }
+    } 
+    // If it's just an API key (no http:// or https://), use it directly
+    else if (!apiKey.includes('://')) {
+      ethRpcUrl = `https://eth-mainnet.g.alchemy.com/v2/${apiKey}`;
     }
   }
   
