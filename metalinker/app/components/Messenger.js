@@ -12,7 +12,7 @@ import {
 } from "wagmi";
 import { useAppKit } from "@reown/appkit/react";
 import { getAddress, isAddress, parseEther } from "viem";
-import { resolveENS } from "../utils/ens";
+import { resolveENS, reverseResolveENS } from "../utils/ens";
 import { extractIPFSHash, uploadToIPFS } from "../utils/ipfs";
 import { getSwapQuote, parseSwapCommand } from "../utils/swap";
 import {
@@ -31,7 +31,27 @@ function useOptionalAppKit() {
   }
 }
 
+function getCurrentBaseUrl() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function getIncomingChatTarget() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  return new URL(window.location.href).searchParams.get("chat")?.trim() || "";
+}
+
 export default function Messenger() {
+  const xmtpEnv = process.env.NEXT_PUBLIC_XMTP_ENV || "dev";
   const { data: walletClient } = useWalletClient();
   const { address, isConnected } = useAccount();
   const { connectAsync, connectors, isPending: isConnectingWallet } = useConnect();
@@ -46,6 +66,7 @@ export default function Messenger() {
   const [error, setError] = useState(null);
   const [conversations, setConversations] = useState([]);
   const [conversationAddresses, setConversationAddresses] = useState({});
+  const [conversationNames, setConversationNames] = useState({});
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [messages, setMessages] = useState([]);
   const [messageText, setMessageText] = useState("");
@@ -57,14 +78,83 @@ export default function Messenger() {
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentRecipient, setPaymentRecipient] = useState("");
   const [showVideoCall, setShowVideoCall] = useState(false);
+  const [myEnsName, setMyEnsName] = useState("");
+  const [shareBaseUrl, setShareBaseUrl] = useState("");
+  const [incomingChatTarget, setIncomingChatTarget] = useState("");
+  const [shareFeedback, setShareFeedback] = useState("");
 
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const selectedConversationRef = useRef(null);
+  const shareFeedbackTimeoutRef = useRef(null);
+  const autoStartedRecipientRef = useRef(null);
 
   useEffect(() => {
     selectedConversationRef.current = selectedConversation;
   }, [selectedConversation]);
+
+  useEffect(() => {
+    const syncUrlState = () => {
+      setShareBaseUrl(getCurrentBaseUrl());
+      setIncomingChatTarget(getIncomingChatTarget());
+    };
+
+    syncUrlState();
+    window.addEventListener("popstate", syncUrlState);
+
+    return () => {
+      window.removeEventListener("popstate", syncUrlState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!incomingChatTarget) {
+      return;
+    }
+
+    setNewChatAddress((currentValue) => currentValue || incomingChatTarget);
+  }, [incomingChatTarget]);
+
+  useEffect(() => {
+    autoStartedRecipientRef.current = null;
+  }, [incomingChatTarget]);
+
+  useEffect(() => {
+    if (!address) {
+      setMyEnsName("");
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const resolvedName = await reverseResolveENS(getAddress(address));
+
+        if (!cancelled) {
+          setMyEnsName(resolvedName !== getAddress(address) ? resolvedName : "");
+        }
+      } catch (err) {
+        console.error("Failed to reverse resolve connected wallet ENS:", err);
+
+        if (!cancelled) {
+          setMyEnsName("");
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [address]);
+
+  useEffect(() => {
+    return () => {
+      if (shareFeedbackTimeoutRef.current) {
+        clearTimeout(shareFeedbackTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const connectWithInjectedWallet = async () => {
     const connector =
@@ -118,10 +208,13 @@ export default function Messenger() {
     setError(null);
     setConversations([]);
     setConversationAddresses({});
+    setConversationNames({});
     setSelectedConversation(null);
     setMessages([]);
     setSwapQuote(null);
     setAttachedFile(null);
+    setShowPaymentModal(false);
+    setShowVideoCall(false);
   }, [walletClient, isConnected]);
 
   useEffect(() => {
@@ -138,7 +231,6 @@ export default function Messenger() {
       setError(null);
 
       try {
-        const xmtpEnv = process.env.NEXT_PUBLIC_XMTP_ENV || "dev";
         const signer = createXmtpSignerFromWalletClient(walletClient);
 
         xmtpClient = await Client.create(signer, { env: xmtpEnv });
@@ -199,7 +291,7 @@ export default function Messenger() {
       conversationStream?.return?.();
       xmtpClient?.close();
     };
-  }, [walletClient, isConnected]);
+  }, [walletClient, isConnected, xmtpEnv]);
 
   useEffect(() => {
     if (!client || conversations.length === 0) {
@@ -239,6 +331,51 @@ export default function Messenger() {
       cancelled = true;
     };
   }, [client, conversations, conversationAddresses]);
+
+  useEffect(() => {
+    const unresolvedConversationIds = Object.entries(conversationAddresses)
+      .filter(([conversationId, peerAddress]) => peerAddress && !conversationNames[conversationId])
+      .map(([conversationId]) => conversationId);
+
+    if (unresolvedConversationIds.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      for (const conversationId of unresolvedConversationIds) {
+        const peerAddress = conversationAddresses[conversationId];
+
+        if (!peerAddress) {
+          continue;
+        }
+
+        try {
+          const resolvedName = await reverseResolveENS(peerAddress);
+
+          if (!cancelled && resolvedName && resolvedName !== peerAddress) {
+            setConversationNames((prev) => {
+              if (prev[conversationId] === resolvedName) {
+                return prev;
+              }
+
+              return {
+                ...prev,
+                [conversationId]: resolvedName,
+              };
+            });
+          }
+        } catch (err) {
+          console.error("Failed to reverse resolve conversation ENS:", err);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationAddresses, conversationNames]);
 
   useEffect(() => {
     if (!selectedConversation) {
@@ -289,16 +426,113 @@ export default function Messenger() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const startConversation = async () => {
-    if (!client || !newChatAddress.trim()) {
+  const setTemporaryShareFeedback = (message) => {
+    setShareFeedback(message);
+
+    if (shareFeedbackTimeoutRef.current) {
+      clearTimeout(shareFeedbackTimeoutRef.current);
+    }
+
+    shareFeedbackTimeoutRef.current = setTimeout(() => {
+      setShareFeedback("");
+    }, 2500);
+  };
+
+  const formatAddress = (value) => {
+    if (!value) {
+      return "";
+    }
+
+    return `${value.slice(0, 6)}...${value.slice(-4)}`;
+  };
+
+  const formatRecipient = (value) => {
+    if (!value) {
+      return "";
+    }
+
+    return isAddress(value) ? formatAddress(getAddress(value)) : value;
+  };
+
+  const getShareLink = () => {
+    if (!address || !shareBaseUrl) {
+      return "";
+    }
+
+    const url = new URL(shareBaseUrl);
+    url.searchParams.set("chat", getAddress(address));
+    return url.toString();
+  };
+
+  const copyText = async (value, successMessage) => {
+    if (!value) {
+      setError("Nothing to copy yet.");
       return;
+    }
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.setAttribute("readonly", "true");
+        textarea.style.position = "absolute";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+
+      setTemporaryShareFeedback(successMessage);
+    } catch (err) {
+      console.error("Copy failed:", err);
+      setError("Failed to copy. Your browser may be blocking clipboard access.");
+    }
+  };
+
+  const handleShareProfile = async () => {
+    const shareLink = getShareLink();
+
+    if (!shareLink || !address) {
+      setError("Your share link is not ready yet.");
+      return;
+    }
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: "Web3 Messenger chat invite",
+          text: myEnsName
+            ? `Start a chat with ${myEnsName} (${getAddress(address)})`
+            : `Start a chat with ${getAddress(address)}`,
+          url: shareLink,
+        });
+        setTemporaryShareFeedback("Share sheet opened.");
+        return;
+      }
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        return;
+      }
+
+      console.error("Native share failed:", err);
+    }
+
+    await copyText(shareLink, "Share link copied.");
+  };
+
+  const startConversation = async (targetValue = newChatAddress, options = {}) => {
+    if (!client || !targetValue.trim()) {
+      return false;
     }
 
     setIsResolvingENS(true);
     setError(null);
 
     try {
-      let resolvedAddress = newChatAddress.trim();
+      let resolvedAddress = targetValue.trim();
 
       if (resolvedAddress.endsWith(".eth")) {
         resolvedAddress = await resolveENS(resolvedAddress);
@@ -309,22 +543,47 @@ export default function Messenger() {
       }
 
       const checksumAddress = getAddress(resolvedAddress);
+
+      if (address && checksumAddress === getAddress(address)) {
+        throw new Error("You cannot start a conversation with your own wallet.");
+      }
+
+      const existingConversation = conversations.find(
+        (conversation) => conversationAddresses[conversation.id] === checksumAddress
+      );
+
+      if (existingConversation) {
+        setSelectedConversation(existingConversation);
+
+        if (!options.keepInput) {
+          setNewChatAddress("");
+        }
+
+        return true;
+      }
+
       const identifier = buildEthereumIdentifier(checksumAddress);
       const canMessage = await client.canMessage([identifier]);
       const isReachable =
         canMessage.get(checksumAddress) ??
-        canMessage.get(checksumAddress.toLowerCase());
+        canMessage.get(checksumAddress.toLowerCase()) ??
+        canMessage.get(identifier.identifier) ??
+        canMessage.get(identifier.identifier.toLowerCase());
 
       if (!isReachable) {
         throw new Error(
-          `This wallet is not available on XMTP ${process.env.NEXT_PUBLIC_XMTP_ENV || "dev"}.`
+          `This wallet is not available on XMTP ${xmtpEnv}. Ask them to connect once and approve XMTP first.`
         );
       }
 
       const conversation = await client.conversations.newDmWithIdentifier(identifier);
 
       setSelectedConversation(conversation);
-      setNewChatAddress("");
+
+      if (!options.keepInput) {
+        setNewChatAddress("");
+      }
+
       setConversations((prev) => {
         if (prev.some((item) => item.id === conversation.id)) {
           return prev;
@@ -336,13 +595,29 @@ export default function Messenger() {
         ...prev,
         [conversation.id]: checksumAddress,
       }));
+
+      return true;
     } catch (err) {
       console.error("startConversation error:", err);
       setError(err?.message ?? String(err));
+      return false;
     } finally {
       setIsResolvingENS(false);
     }
   };
+
+  useEffect(() => {
+    if (status !== "ready" || !incomingChatTarget) {
+      return;
+    }
+
+    if (autoStartedRecipientRef.current === incomingChatTarget) {
+      return;
+    }
+
+    autoStartedRecipientRef.current = incomingChatTarget;
+    void startConversation(incomingChatTarget, { keepInput: true });
+  }, [incomingChatTarget, status]);
 
   const sendMessage = async () => {
     if (!selectedConversation || (!messageText.trim() && !attachedFile)) {
@@ -433,15 +708,13 @@ export default function Messenger() {
     }
   };
 
-  const formatAddress = (value) => {
-    if (!value) {
-      return "";
+  const formatConversationLabel = (conversation) => {
+    const peerName = conversationNames[conversation.id];
+
+    if (peerName) {
+      return peerName;
     }
 
-    return `${value.slice(0, 6)}...${value.slice(-4)}`;
-  };
-
-  const formatConversationLabel = (conversation) => {
     const peerAddress = conversationAddresses[conversation.id];
 
     if (peerAddress) {
@@ -458,15 +731,26 @@ export default function Messenger() {
   const selectedPeerAddress = selectedConversation
     ? conversationAddresses[selectedConversation.id]
     : null;
+  const selectedPeerName = selectedConversation
+    ? conversationNames[selectedConversation.id]
+    : "";
+  const shareLink = getShareLink();
 
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col">
       <header className="bg-gray-800 p-4 shadow-md border-b border-gray-700">
-        <div className="container mx-auto flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-indigo-400">Web3 Messenger</h1>
+        <div className="container mx-auto flex justify-between items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-indigo-400">Web3 Messenger</h1>
+            <p className="text-xs text-gray-400 mt-1">
+              Direct wallet-to-wallet chat on XMTP {xmtpEnv}
+            </p>
+          </div>
           <div className="flex items-center gap-4">
             {isConnected && address && (
-              <span className="text-sm text-gray-400">{formatAddress(address)}</span>
+              <span className="text-sm text-gray-400">
+                {myEnsName ? `${myEnsName} - ${formatAddress(address)}` : formatAddress(address)}
+              </span>
             )}
             {isConnected ? (
               <button
@@ -490,9 +774,21 @@ export default function Messenger() {
 
       <main className="flex-grow flex overflow-hidden">
         {!isConnected ? (
-          <div className="flex-grow flex items-center justify-center">
-            <div className="text-center">
-              <p className="text-xl text-gray-400 mb-4">Please connect your wallet to begin</p>
+          <div className="flex-grow flex items-center justify-center p-6">
+            <div className="text-center max-w-xl">
+              <p className="text-xl text-gray-300 mb-3">Connect your wallet to begin messaging.</p>
+              <p className="text-sm text-gray-500 mb-6">
+                After you connect once, the app creates your XMTP inbox and gives you a shareable
+                chat link.
+              </p>
+              {incomingChatTarget && (
+                <div className="mb-6 rounded-xl border border-indigo-500/30 bg-indigo-950/40 p-4 text-left">
+                  <p className="text-sm font-medium text-indigo-200">Invite link detected</p>
+                  <p className="mt-1 text-sm text-indigo-100">
+                    Connect this wallet to start chatting with {formatRecipient(incomingChatTarget)}.
+                  </p>
+                </div>
+              )}
               <button
                 onClick={handleConnect}
                 disabled={isConnectingWallet}
@@ -500,15 +796,25 @@ export default function Messenger() {
               >
                 {isConnectingWallet ? "Connecting..." : "Connect Wallet"}
               </button>
-              {error && <p className="text-red-400 mt-4 max-w-md">{error}</p>}
+              {error && <p className="text-red-400 mt-4 max-w-md mx-auto">{error}</p>}
             </div>
           </div>
         ) : status === "initializing" ? (
-          <div className="flex-grow flex items-center justify-center">
-            <p className="text-lg">Initializing XMTP (approve the signature request)...</p>
+          <div className="flex-grow flex items-center justify-center p-6">
+            <div className="text-center max-w-lg">
+              <p className="text-lg">
+                Initializing XMTP. Approve the signature request in MetaMask.
+              </p>
+              {incomingChatTarget && (
+                <p className="text-sm text-gray-400 mt-3">
+                  Your invite link is ready and will open chat with{" "}
+                  {formatRecipient(incomingChatTarget)} once setup completes.
+                </p>
+              )}
+            </div>
           </div>
         ) : status === "error" ? (
-          <div className="flex-grow flex items-center justify-center">
+          <div className="flex-grow flex items-center justify-center p-6">
             <div className="text-center">
               <p className="text-lg text-red-400">Error: {error}</p>
               <button
@@ -522,54 +828,112 @@ export default function Messenger() {
         ) : status === "ready" ? (
           <>
             <div className="w-80 bg-gray-800 border-r border-gray-700 flex flex-col">
-              <div className="p-4 border-b border-gray-700">
-                <h2 className="text-lg font-semibold mb-3">Conversations</h2>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newChatAddress}
-                    onChange={(event) => setNewChatAddress(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        void startConversation();
+              <div className="p-4 border-b border-gray-700 space-y-4">
+                <div className="rounded-2xl border border-indigo-500/30 bg-gradient-to-br from-indigo-500/20 via-slate-800 to-slate-900 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-200/80">
+                    Your Chat ID
+                  </p>
+                  <p className="mt-3 text-sm font-semibold text-white break-all">
+                    {myEnsName || "Wallet Address"}
+                  </p>
+                  <p className="mt-1 text-xs text-indigo-100/80 break-all">
+                    {address ? getAddress(address) : ""}
+                  </p>
+                  <p className="mt-3 text-xs text-gray-300">
+                    Share your wallet or link. Anyone on XMTP {xmtpEnv} can start a DM from it.
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      onClick={() =>
+                        copyText(
+                          address ? getAddress(address) : "",
+                          "Wallet address copied."
+                        )
                       }
-                    }}
-                    placeholder="Address or .eth name"
-                    className="flex-1 p-2 rounded bg-gray-700 text-sm"
-                  />
-                  <button
-                    onClick={startConversation}
-                    disabled={isResolvingENS || !newChatAddress.trim()}
-                    className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-3 py-2 rounded text-sm"
-                  >
-                    {isResolvingENS ? "..." : "+"}
-                  </button>
+                      className="bg-white/10 hover:bg-white/20 px-3 py-2 rounded text-xs"
+                    >
+                      Copy Address
+                    </button>
+                    <button
+                      onClick={() => copyText(shareLink, "Share link copied.")}
+                      className="bg-white/10 hover:bg-white/20 px-3 py-2 rounded text-xs"
+                    >
+                      Copy Link
+                    </button>
+                    <button
+                      onClick={handleShareProfile}
+                      className="bg-indigo-500 hover:bg-indigo-400 px-3 py-2 rounded text-xs font-medium"
+                    >
+                      Share
+                    </button>
+                  </div>
+                  {shareFeedback && (
+                    <p className="mt-3 text-xs text-emerald-300">{shareFeedback}</p>
+                  )}
+                </div>
+
+                <div>
+                  <h2 className="text-lg font-semibold mb-3">Conversations</h2>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newChatAddress}
+                      onChange={(event) => setNewChatAddress(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          void startConversation();
+                        }
+                      }}
+                      placeholder="Address or .eth name"
+                      className="flex-1 p-2 rounded bg-gray-700 text-sm"
+                    />
+                    <button
+                      onClick={() => void startConversation()}
+                      disabled={isResolvingENS || !newChatAddress.trim()}
+                      className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-3 py-2 rounded text-sm"
+                    >
+                      {isResolvingENS ? "..." : "+"}
+                    </button>
+                  </div>
+                  {incomingChatTarget && !selectedConversation && (
+                    <p className="mt-2 text-xs text-indigo-300">
+                      Invite ready for {formatRecipient(incomingChatTarget)}.
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto">
                 {conversations.length === 0 ? (
                   <div className="p-4 text-center text-gray-500 text-sm">
-                    No conversations yet. Start a new chat.
+                    No conversations yet. Share your chat link to invite someone in.
                   </div>
                 ) : (
-                  conversations.map((conversation) => (
-                    <button
-                      key={conversation.id}
-                      onClick={() => setSelectedConversation(conversation)}
-                      className={`w-full p-3 text-left border-b border-gray-700 hover:bg-gray-700 ${
-                        selectedConversation?.id === conversation.id ? "bg-gray-700" : ""
-                      }`}
-                    >
-                      <div className="font-medium">
-                        {formatConversationLabel(conversation)}
-                      </div>
-                    </button>
-                  ))
+                  conversations.map((conversation) => {
+                    const peerAddress = conversationAddresses[conversation.id];
+                    const peerName = conversationNames[conversation.id];
+
+                    return (
+                      <button
+                        key={conversation.id}
+                        onClick={() => setSelectedConversation(conversation)}
+                        className={`w-full p-3 text-left border-b border-gray-700 hover:bg-gray-700 ${
+                          selectedConversation?.id === conversation.id ? "bg-gray-700" : ""
+                        }`}
+                      >
+                        <div className="font-medium">{formatConversationLabel(conversation)}</div>
+                        {peerName && peerAddress && (
+                          <div className="text-xs text-gray-400 mt-1">
+                            {formatAddress(peerAddress)}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  })
                 )}
               </div>
             </div>
 
-            <div className="flex-1 flex flex-col bg-gray-900">
+            <div className="flex-1 flex flex-col bg-gray-900 relative">
               {error && (
                 <div className="px-4 py-3 bg-red-950 text-red-200 border-b border-red-800">
                   {error}
@@ -577,20 +941,38 @@ export default function Messenger() {
               )}
 
               {!selectedConversation ? (
-                <div className="flex-grow flex items-center justify-center">
-                  <div className="text-center text-gray-400">
-                    <p className="text-lg">Select or create a conversation to start chatting</p>
+                <div className="flex-grow flex items-center justify-center p-6">
+                  <div className="text-center text-gray-400 max-w-xl">
+                    <p className="text-lg">
+                      Select or create a conversation to start chatting.
+                    </p>
+                    <p className="text-sm text-gray-500 mt-3">
+                      The easiest flow is to send someone your chat link, let them connect once,
+                      and the DM opens automatically.
+                    </p>
+                    {shareLink && (
+                      <button
+                        onClick={() => copyText(shareLink, "Share link copied.")}
+                        className="mt-5 bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded"
+                      >
+                        Copy My Chat Link
+                      </button>
+                    )}
                   </div>
                 </div>
               ) : (
                 <>
-                  <div className="bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center">
+                  <div className="bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center gap-4">
                     <div>
                       <h3 className="font-semibold">
-                        {selectedPeerAddress
-                          ? formatAddress(selectedPeerAddress)
-                          : formatConversationLabel(selectedConversation)}
+                        {selectedPeerName ||
+                          (selectedPeerAddress
+                            ? formatAddress(selectedPeerAddress)
+                            : formatConversationLabel(selectedConversation))}
                       </h3>
+                      {selectedPeerName && selectedPeerAddress && (
+                        <p className="text-xs text-gray-400 mt-1">{selectedPeerAddress}</p>
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -806,7 +1188,7 @@ export default function Messenger() {
                         className="flex-1 p-2 rounded bg-gray-700"
                       />
                       <button
-                        onClick={sendMessage}
+                        onClick={() => void sendMessage()}
                         disabled={!messageText.trim() && !attachedFile}
                         className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-6 py-2 rounded"
                       >

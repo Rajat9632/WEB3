@@ -15,6 +15,7 @@ const nextConfig = {
       'pino-pretty': false,
       '@react-native-async-storage/async-storage': false,
       'user_preferences_bindings_wasm_bg.wasm': false,
+      '@phosphor-icons/webcomponents': false,
     };
 
     if (isServer) {
@@ -39,3 +40,4 @@ const nextConfig = {
 };
 
 export default nextConfig;
+
