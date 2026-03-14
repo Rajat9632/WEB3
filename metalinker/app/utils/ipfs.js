@@ -1,5 +1,5 @@
 // IPFS file handling with Pinata
-import { Client } from '@xmtp/browser-sdk';
+
 
 // Upload encrypted file to Pinata
 export async function uploadToIPFS(file, xmtpClient) {
@@ -67,20 +67,21 @@ export async function downloadFromIPFS(ipfsHash, xmtpClient) {
 }
 
 // Simple encryption (in production, use XMTP's built-in encryption)
-async function encryptFile(data, xmtpClient) {
+async function encryptFile(data, _xmtpClient) {
   // For now, return as-is. In production, use XMTP's encryption
   // XMTP messages are automatically encrypted, so we'll handle file encryption similarly
   return data;
 }
 
 // Simple decryption
-async function decryptFile(data, xmtpClient) {
+async function decryptFile(data, _xmtpClient) {
   // For now, return as-is. In production, use XMTP's decryption
   return data;
 }
 
 // Extract IPFS hash from message content
 export function extractIPFSHash(message) {
+  if (typeof message !== 'string') return null;
   const ipfsRegex = /ipfs:\/\/([a-zA-Z0-9]+)/;
   const match = message.match(ipfsRegex);
   return match ? match[1] : null;

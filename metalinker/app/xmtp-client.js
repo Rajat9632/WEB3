@@ -1,12 +1,15 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { Client } from "@xmtp/browser-sdk";
-import { useWalletClient, useAccount } from "wagmi";
+import { getAddress, isAddress } from "viem";
+import { useAccount, useWalletClient } from "wagmi";
+import { createXmtpSignerFromWalletClient } from "./utils/xmtp-signer";
+import { buildEthereumIdentifier, messageToDate } from "./utils/xmtp";
 
 export default function XmtpClient() {
   const { data: walletClient } = useWalletClient();
-  const { address, isConnected } = useAccount();
+  const { isConnected } = useAccount();
   const [client, setClient] = useState(null);
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState(null);
@@ -16,50 +19,88 @@ export default function XmtpClient() {
   const [messages, setMessages] = useState([]);
 
   useEffect(() => {
-    if (!walletClient || !isConnected) return;
+    if (!walletClient || !isConnected) {
+      setClient(null);
+      setStatus("idle");
+      setConversation(null);
+      setMessages([]);
+      return;
+    }
+
+    let cancelled = false;
+    let xmtpClient = null;
+
     (async () => {
       try {
         setStatus("initializing");
-        const xmtp = await Client.create(walletClient, { env: "dev" }); // 'production' for mainnet
-        console.log("✅ XMTP Client Ready:", xmtp);
-        setClient(xmtp);
+        setError(null);
+
+        xmtpClient = await Client.create(
+          createXmtpSignerFromWalletClient(walletClient),
+          { env: "dev" }
+        );
+
+        if (cancelled) {
+          xmtpClient.close();
+          return;
+        }
+
+        setClient(xmtpClient);
         setStatus("ready");
-      } catch (e) {
-        console.error("XMTP Init Error:", e);
-        setError(e.message);
-        setStatus("error");
+      } catch (err) {
+        console.error("XMTP Init Error:", err);
+
+        if (!cancelled) {
+          setError(err?.message ?? String(err));
+          setStatus("error");
+        }
       }
     })();
+
+    return () => {
+      cancelled = true;
+      xmtpClient?.close();
+    };
   }, [walletClient, isConnected]);
 
   const handleStartConversation = async () => {
-    if (!client || !peerAddress) return;
-    try {
-      const convo = await client.conversations.newConversation(peerAddress);
-      setConversation(convo);
+    if (!client || !isAddress(peerAddress)) {
+      setError("Enter a valid wallet address.");
+      return;
+    }
 
-      // load previous messages
-      const msgs = await convo.messages();
-      setMessages(msgs);
-    } catch (e) {
-      console.error("Conversation error:", e);
+    try {
+      const identifier = buildEthereumIdentifier(getAddress(peerAddress));
+      const convo = await client.conversations.newDmWithIdentifier(identifier);
+      setConversation(convo);
+      setMessages(await convo.messages());
+    } catch (err) {
+      console.error("Conversation error:", err);
+      setError(err?.message ?? String(err));
     }
   };
 
   const handleSendMessage = async () => {
-    if (!conversation || !message) return;
-    await conversation.send(message);
-    setMessage("");
-    const msgs = await conversation.messages();
-    setMessages(msgs);
+    if (!conversation || !message.trim()) {
+      return;
+    }
+
+    try {
+      await conversation.send(message);
+      setMessage("");
+      setMessages(await conversation.messages());
+    } catch (err) {
+      console.error("Send message error:", err);
+      setError(err?.message ?? String(err));
+    }
   };
 
   return (
     <div className="p-6 bg-gray-900 text-white min-h-screen">
-      <h1 className="text-3xl mb-4 text-indigo-400 font-bold">XMTP V3 Messenger</h1>
+      <h1 className="text-3xl mb-4 text-indigo-400 font-bold">XMTP Messenger</h1>
 
       {status === "idle" && <p>Connect wallet to start.</p>}
-      {status === "initializing" && <p>Initializing XMTP Client...</p>}
+      {status === "initializing" && <p>Initializing XMTP client...</p>}
       {status === "error" && <p className="text-red-400">Error: {error}</p>}
       {status === "ready" && (
         <>
@@ -67,7 +108,7 @@ export default function XmtpClient() {
             <input
               type="text"
               value={peerAddress}
-              onChange={(e) => setPeerAddress(e.target.value)}
+              onChange={(event) => setPeerAddress(event.target.value)}
               placeholder="Enter wallet address (0x...)"
               className="p-2 rounded bg-gray-700 w-full mb-2"
             />
@@ -82,26 +123,28 @@ export default function XmtpClient() {
           {conversation && (
             <div className="mt-6">
               <h3 className="font-semibold text-lg mb-2">
-                Chatting with {conversation.peerAddress}
+                Chatting with {getAddress(peerAddress)}
               </h3>
               <div className="h-64 overflow-y-auto border border-gray-700 p-3 rounded mb-3 bg-gray-800">
-                {messages.map((m, i) => (
-                  <div
-                    key={i}
-                    className={`mb-2 p-2 rounded ${
-                      m.senderAddress === address
-                        ? "bg-indigo-600 self-end text-right"
-                        : "bg-gray-700 self-start"
-                    }`}
-                  >
-                    <p>{m.content}</p>
-                  </div>
-                ))}
+                {messages.map((item) => {
+                  const sentAt = messageToDate(item);
+
+                  return (
+                    <div key={item.id} className="mb-2 p-2 rounded bg-gray-700">
+                      <p>{typeof item.content === "string" ? item.content : String(item.content)}</p>
+                      {sentAt && (
+                        <p className="text-xs text-gray-400 mt-1">
+                          {sentAt.toLocaleTimeString()}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
               <div className="flex">
                 <input
                   value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  onChange={(event) => setMessage(event.target.value)}
                   placeholder="Type message..."
                   className="flex-grow p-2 rounded-l bg-gray-700"
                 />

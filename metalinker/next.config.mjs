@@ -14,19 +14,28 @@ const nextConfig = {
       ...(config.resolve.alias || {}),
       'pino-pretty': false,
       '@react-native-async-storage/async-storage': false,
-      'user_preferences_bindings_wasm_bg.wasm': false
+      'user_preferences_bindings_wasm_bg.wasm': false,
     };
 
     if (isServer) {
       // Treat any .wasm import as inert text so SSR won't try to read it
       config.module.rules.push({
         test: /\.wasm$/,
-        type: 'asset/source'
+        type: 'asset/source',
+      });
+    }
+
+    // Handle Reown AppKit externals for SSR
+    if (isServer) {
+      config.externals = config.externals || [];
+      config.externals.push({
+        'utf-8-validate': 'commonjs utf-8-validate',
+        'bufferutil': 'commonjs bufferutil',
       });
     }
 
     return config;
-  }
+  },
 };
 
 export default nextConfig;

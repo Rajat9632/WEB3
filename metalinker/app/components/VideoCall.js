@@ -2,174 +2,160 @@
 
 import React, { useEffect, useRef, useState } from "react";
 
-export default function VideoCall({ conversation, xmtpClient, onClose }) {
+export default function VideoCall({ conversation, onClose }) {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const [localStream, setLocalStream] = useState(null);
-  const [remoteStream, setRemoteStream] = useState(null);
   const [peerConnection, setPeerConnection] = useState(null);
-  const [isCallActive, setIsCallActive] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    initializeCall();
-    return () => {
-      cleanup();
-    };
-  }, []);
+    let mounted = true;
+    let activeStream = null;
+    let activePeerConnection = null;
 
-  const initializeCall = async () => {
-    try {
-      // Get user media
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
+    (async () => {
+      try {
+        const mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
 
-      setLocalStream(stream);
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-
-      // Create RTCPeerConnection
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-        ],
-      });
-
-      // Add local stream tracks
-      stream.getTracks().forEach((track) => {
-        pc.addTrack(track, stream);
-      });
-
-      // Handle remote stream
-      pc.ontrack = (event) => {
-        const remoteStream = event.streams[0];
-        setRemoteStream(remoteStream);
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStream;
+        if (!mounted) {
+          mediaStream.getTracks().forEach((track) => track.stop());
+          return;
         }
-      };
 
-      // Handle ICE candidates
-      pc.onicecandidate = async (event) => {
-        if (event.candidate && conversation) {
-          // Send ICE candidate via XMTP
+        activeStream = mediaStream;
+        setLocalStream(mediaStream);
+
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = mediaStream;
+        }
+
+        const nextPeerConnection = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+          ],
+        });
+
+        activePeerConnection = nextPeerConnection;
+        setPeerConnection(nextPeerConnection);
+
+        mediaStream.getTracks().forEach((track) => {
+          nextPeerConnection.addTrack(track, mediaStream);
+        });
+
+        nextPeerConnection.ontrack = (event) => {
+          const [remoteStream] = event.streams;
+
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = remoteStream;
+          }
+        };
+
+        nextPeerConnection.onicecandidate = async (event) => {
+          if (!event.candidate || !conversation) {
+            return;
+          }
+
           await conversation.send(
             JSON.stringify({
               type: "ice-candidate",
               candidate: event.candidate,
             })
           );
+        };
+
+        if (conversation) {
+          const offer = await nextPeerConnection.createOffer();
+          await nextPeerConnection.setLocalDescription(offer);
+          await conversation.send(
+            JSON.stringify({
+              type: "offer",
+              offer,
+            })
+          );
         }
-      };
-
-      setPeerConnection(pc);
-
-      // Create offer
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      // Send offer via XMTP
-      if (conversation) {
-        await conversation.send(
-          JSON.stringify({
-            type: "offer",
-            offer: offer,
-          })
-        );
+      } catch (err) {
+        console.error("Call initialization error:", err);
+        setError(`Failed to initialize call: ${err.message}`);
       }
+    })();
 
-      setIsCallActive(true);
-    } catch (err) {
-      console.error("Call initialization error:", err);
-      setError("Failed to initialize call: " + err.message);
-    }
-  };
+    return () => {
+      mounted = false;
+      activeStream?.getTracks().forEach((track) => track.stop());
+      activePeerConnection?.close();
+    };
+  }, [conversation]);
 
-  // Listen for WebRTC messages via XMTP
   useEffect(() => {
-    if (!conversation || !peerConnection) return;
+    if (!conversation || !peerConnection) {
+      return;
+    }
 
-    let messageStream = null;
     let cancelled = false;
+    let messageStream = null;
 
-    const setupMessageListener = async () => {
+    (async () => {
       try {
-        // Stream messages from the conversation
-        if (conversation && typeof conversation.streamMessages === 'function') {
-          messageStream = await conversation.streamMessages();
-          
-          for await (const message of messageStream) {
-            if (cancelled) break;
-            
-            try {
-              const data = JSON.parse(message.content);
+        messageStream = await conversation.stream();
 
-              if (data.type === "offer" && peerConnection) {
-                await peerConnection.setRemoteDescription(
-                  new RTCSessionDescription(data.offer)
-                );
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                if (conversation) {
-                  await conversation.send(
-                    JSON.stringify({
-                      type: "answer",
-                      answer: answer,
-                    })
-                  );
-                }
-              } else if (data.type === "answer" && peerConnection) {
-                await peerConnection.setRemoteDescription(
-                  new RTCSessionDescription(data.answer)
-                );
-              } else if (data.type === "ice-candidate" && peerConnection) {
-                await peerConnection.addIceCandidate(
-                  new RTCIceCandidate(data.candidate)
-                );
-              }
-            } catch (err) {
-              // Not a WebRTC message, ignore
-              console.debug("Non-WebRTC message:", err);
+        for await (const message of messageStream) {
+          if (cancelled || typeof message.content !== "string") {
+            continue;
+          }
+
+          try {
+            const data = JSON.parse(message.content);
+
+            if (data.type === "offer") {
+              await peerConnection.setRemoteDescription(
+                new RTCSessionDescription(data.offer)
+              );
+              const answer = await peerConnection.createAnswer();
+              await peerConnection.setLocalDescription(answer);
+              await conversation.send(
+                JSON.stringify({
+                  type: "answer",
+                  answer,
+                })
+              );
+            } else if (data.type === "answer") {
+              await peerConnection.setRemoteDescription(
+                new RTCSessionDescription(data.answer)
+              );
+            } else if (data.type === "ice-candidate") {
+              await peerConnection.addIceCandidate(
+                new RTCIceCandidate(data.candidate)
+              );
             }
+          } catch {
+            // Ignore non-WebRTC XMTP messages.
           }
         }
       } catch (err) {
         console.error("WebRTC message stream error:", err);
       }
-    };
-
-    setupMessageListener();
+    })();
 
     return () => {
       cancelled = true;
-      if (messageStream && typeof messageStream.return === 'function') {
-        messageStream.return();
-      }
+      messageStream?.return?.();
     };
   }, [conversation, peerConnection]);
 
-  const cleanup = () => {
-    if (localStream) {
-      localStream.getTracks().forEach((track) => track.stop());
-    }
-    if (peerConnection) {
-      peerConnection.close();
-    }
-  };
-
   const endCall = () => {
-    cleanup();
-    if (onClose) onClose();
+    localStream?.getTracks().forEach((track) => track.stop());
+    peerConnection?.close();
+    onClose?.();
   };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center">
       <div className="relative w-full h-full max-w-6xl max-h-[90vh]">
-        {/* Remote Video */}
         <video
           ref={remoteVideoRef}
           autoPlay
@@ -177,7 +163,6 @@ export default function VideoCall({ conversation, xmtpClient, onClose }) {
           className="w-full h-full object-cover"
         />
 
-        {/* Local Video (Picture-in-Picture) */}
         <div className="absolute bottom-4 right-4 w-64 h-48 rounded-lg overflow-hidden border-2 border-white">
           <video
             ref={localVideoRef}
@@ -188,7 +173,6 @@ export default function VideoCall({ conversation, xmtpClient, onClose }) {
           />
         </div>
 
-        {/* Controls */}
         <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-4">
           <button
             onClick={endCall}
@@ -207,4 +191,3 @@ export default function VideoCall({ conversation, xmtpClient, onClose }) {
     </div>
   );
 }
-
