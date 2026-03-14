@@ -737,9 +737,9 @@ export default function Messenger() {
   const shareLink = getShareLink();
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white flex flex-col">
-      <header className="bg-gray-800 p-4 shadow-md border-b border-gray-700">
-        <div className="container mx-auto flex justify-between items-center gap-4">
+    <div className="h-screen bg-gray-900 text-white flex flex-col overflow-hidden">
+      <header className="flex-shrink-0 bg-gray-800 p-4 shadow-md border-b border-gray-700">
+        <div className="flex justify-between items-center gap-4">
           <div>
             <h1 className="text-2xl font-bold text-indigo-400">Web3 Messenger</h1>
             <p className="text-xs text-gray-400 mt-1">
@@ -772,7 +772,7 @@ export default function Messenger() {
         </div>
       </header>
 
-      <main className="flex-grow flex overflow-hidden">
+      <main className="flex-1 flex overflow-hidden">
         {!isConnected ? (
           <div className="flex-grow flex items-center justify-center p-6">
             <div className="text-center max-w-xl">
@@ -827,8 +827,8 @@ export default function Messenger() {
           </div>
         ) : status === "ready" ? (
           <>
-            <div className="w-80 bg-gray-800 border-r border-gray-700 flex flex-col">
-              <div className="p-4 border-b border-gray-700 space-y-4">
+            <div className="w-80 bg-gray-800 border-r border-gray-700 flex flex-col flex-shrink-0 overflow-hidden">
+              <div className="flex-shrink-0 p-4 border-b border-gray-700 space-y-4 overflow-y-auto max-h-[40%]">
                 <div className="rounded-2xl border border-indigo-500/30 bg-gradient-to-br from-indigo-500/20 via-slate-800 to-slate-900 p-4">
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-200/80">
                     Your Chat ID
@@ -902,7 +902,7 @@ export default function Messenger() {
                   )}
                 </div>
               </div>
-              <div className="flex-1 overflow-y-auto">
+              <div className="flex-1 overflow-y-auto min-h-0">
                 {conversations.length === 0 ? (
                   <div className="p-4 text-center text-gray-500 text-sm">
                     No conversations yet. Share your chat link to invite someone in.
@@ -933,15 +933,15 @@ export default function Messenger() {
               </div>
             </div>
 
-            <div className="flex-1 flex flex-col bg-gray-900 relative">
+            <div className="flex-1 flex flex-col bg-gray-900 relative overflow-hidden">
               {error && (
-                <div className="px-4 py-3 bg-red-950 text-red-200 border-b border-red-800">
+                <div className="flex-shrink-0 px-4 py-3 bg-red-950 text-red-200 border-b border-red-800">
                   {error}
                 </div>
               )}
 
               {!selectedConversation ? (
-                <div className="flex-grow flex items-center justify-center p-6">
+                <div className="flex-1 flex items-center justify-center p-6 overflow-auto">
                   <div className="text-center text-gray-400 max-w-xl">
                     <p className="text-lg">
                       Select or create a conversation to start chatting.
@@ -962,19 +962,19 @@ export default function Messenger() {
                 </div>
               ) : (
                 <>
-                  <div className="bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center gap-4">
-                    <div>
-                      <h3 className="font-semibold">
+                  <div className="flex-shrink-0 bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center gap-4">
+                    <div className="min-w-0">
+                      <h3 className="font-semibold truncate">
                         {selectedPeerName ||
                           (selectedPeerAddress
                             ? formatAddress(selectedPeerAddress)
                             : formatConversationLabel(selectedConversation))}
                       </h3>
                       {selectedPeerName && selectedPeerAddress && (
-                        <p className="text-xs text-gray-400 mt-1">{selectedPeerAddress}</p>
+                        <p className="text-xs text-gray-400 mt-1 truncate">{selectedPeerAddress}</p>
                       )}
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex-shrink-0 flex gap-2">
                       <button
                         onClick={() => {
                           if (!selectedPeerAddress) {
@@ -985,20 +985,20 @@ export default function Messenger() {
                           setShowPaymentModal(true);
                           setPaymentRecipient(selectedPeerAddress);
                         }}
-                        className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm"
+                        className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm whitespace-nowrap"
                       >
                         Pay
                       </button>
                       <button
                         onClick={() => setShowVideoCall(true)}
-                        className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm"
+                        className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm whitespace-nowrap"
                       >
                         Video Call
                       </button>
                     </div>
                   </div>
 
-                  <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
                     {messages.length === 0 ? (
                       <div className="text-center text-gray-500">No messages yet.</div>
                     ) : (
@@ -1154,7 +1154,7 @@ export default function Messenger() {
                     </div>
                   )}
 
-                  <div className="bg-gray-800 p-4 border-t border-gray-700">
+                  <div className="flex-shrink-0 bg-gray-800 p-4 border-t border-gray-700">
                     <div className="flex gap-2">
                       <input
                         ref={fileInputRef}
@@ -1165,12 +1165,12 @@ export default function Messenger() {
                       />
                       <label
                         htmlFor="file-input"
-                        className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded cursor-pointer"
+                        className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded cursor-pointer whitespace-nowrap"
                       >
                         Attach
                       </label>
                       {attachedFile && (
-                        <span className="text-sm text-gray-400 self-center">
+                        <span className="text-sm text-gray-400 self-center truncate">
                           {attachedFile.name}
                         </span>
                       )}
@@ -1185,12 +1185,12 @@ export default function Messenger() {
                           }
                         }}
                         placeholder="Type a message... (or /swap 1 ETH USDC)"
-                        className="flex-1 p-2 rounded bg-gray-700"
+                        className="flex-1 p-2 rounded bg-gray-700 min-w-0"
                       />
                       <button
                         onClick={() => void sendMessage()}
                         disabled={!messageText.trim() && !attachedFile}
-                        className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-6 py-2 rounded"
+                        className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 px-6 py-2 rounded whitespace-nowrap"
                       >
                         Send
                       </button>

@@ -8,6 +8,9 @@ export default function VideoCall({ conversation, onClose }) {
   const [localStream, setLocalStream] = useState(null);
   const [peerConnection, setPeerConnection] = useState(null);
   const [error, setError] = useState(null);
+  const [connectionState, setConnectionState] = useState("initial");
+  const [hasRemoteStream, setHasRemoteStream] = useState(false);
+  const connectionTimeoutRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
@@ -52,7 +55,45 @@ export default function VideoCall({ conversation, onClose }) {
 
           if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = remoteStream;
+            setHasRemoteStream(true);
           }
+        };
+
+        // Monitor connection state
+        nextPeerConnection.onconnectionstatechange = () => {
+          const state = nextPeerConnection.connectionState;
+          console.log("Connection state:", state);
+          setConnectionState(state);
+
+          if (state === "failed") {
+            setError("Connection failed. Please check your network and try again.");
+          } else if (state === "disconnected") {
+            setError("Connection lost. Attempting to reconnect...");
+          } else if (state === "connected") {
+            setError(null);
+            if (connectionTimeoutRef.current) {
+              clearTimeout(connectionTimeoutRef.current);
+            }
+          }
+        };
+
+        // Monitor ICE connection state
+        nextPeerConnection.oniceconnectionstatechange = () => {
+          const state = nextPeerConnection.iceConnectionState;
+          console.log("ICE connection state:", state);
+
+          if (state === "failed") {
+            setError("ICE connection failed. Check NAT/firewall settings.");
+          } else if (state === "disconnected") {
+            console.warn("ICE disconnected");
+          } else if (state === "checking") {
+            setConnectionState("connecting");
+          }
+        };
+
+        // Monitor ICE gathering state
+        nextPeerConnection.onicegatheringstatechange = () => {
+          console.log("ICE gathering state:", nextPeerConnection.iceGatheringState);
         };
 
         nextPeerConnection.onicecandidate = async (event) => {
@@ -60,12 +101,16 @@ export default function VideoCall({ conversation, onClose }) {
             return;
           }
 
-          await conversation.send(
-            JSON.stringify({
-              type: "ice-candidate",
-              candidate: event.candidate,
-            })
-          );
+          try {
+            await conversation.send(
+              JSON.stringify({
+                type: "ice-candidate",
+                candidate: event.candidate,
+              })
+            );
+          } catch (err) {
+            console.error("Error sending ICE candidate:", err);
+          }
         };
 
         if (conversation) {
@@ -74,9 +119,22 @@ export default function VideoCall({ conversation, onClose }) {
           await conversation.send(
             JSON.stringify({
               type: "offer",
-              offer,
+              offer: {
+                type: offer.type,
+                sdp: offer.sdp,
+              },
             })
           );
+
+          // Set timeout for connection establishment
+          connectionTimeoutRef.current = setTimeout(() => {
+            if (
+              nextPeerConnection.connectionState !== "connected" &&
+              nextPeerConnection.connectionState !== "completed"
+            ) {
+              setError("Connection timeout. The other party may be offline.");
+            }
+          }, 30000); // 30 second timeout
         }
       } catch (err) {
         console.error("Call initialization error:", err);
@@ -88,6 +146,9 @@ export default function VideoCall({ conversation, onClose }) {
       mounted = false;
       activeStream?.getTracks().forEach((track) => track.stop());
       activePeerConnection?.close();
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+      }
     };
   }, [conversation]);
 
@@ -112,28 +173,47 @@ export default function VideoCall({ conversation, onClose }) {
             const data = JSON.parse(message.content);
 
             if (data.type === "offer") {
+              console.log("Received offer");
               await peerConnection.setRemoteDescription(
-                new RTCSessionDescription(data.offer)
+                new RTCSessionDescription({
+                  type: "offer",
+                  sdp: data.offer.sdp || data.offer,
+                })
               );
               const answer = await peerConnection.createAnswer();
               await peerConnection.setLocalDescription(answer);
               await conversation.send(
                 JSON.stringify({
                   type: "answer",
-                  answer,
+                  answer: {
+                    type: answer.type,
+                    sdp: answer.sdp,
+                  },
                 })
               );
             } else if (data.type === "answer") {
+              console.log("Received answer");
               await peerConnection.setRemoteDescription(
-                new RTCSessionDescription(data.answer)
+                new RTCSessionDescription({
+                  type: "answer",
+                  sdp: data.answer.sdp || data.answer,
+                })
               );
             } else if (data.type === "ice-candidate") {
-              await peerConnection.addIceCandidate(
-                new RTCIceCandidate(data.candidate)
-              );
+              try {
+                if (data.candidate) {
+                  await peerConnection.addIceCandidate(
+                    new RTCIceCandidate(data.candidate)
+                  );
+                }
+              } catch (err) {
+                // ICE candidate errors can be ignored if candidate is late
+                console.debug("ICE candidate error (may be expected):", err.message);
+              }
             }
-          } catch {
-            // Ignore non-WebRTC XMTP messages.
+          } catch (err) {
+            // Ignore non-WebRTC XMTP messages
+            console.debug("Non-WebRTC message or parsing error:", err.message);
           }
         }
       } catch (err) {
@@ -144,6 +224,9 @@ export default function VideoCall({ conversation, onClose }) {
     return () => {
       cancelled = true;
       messageStream?.return?.();
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+      }
     };
   }, [conversation, peerConnection]);
 
@@ -156,14 +239,33 @@ export default function VideoCall({ conversation, onClose }) {
   return (
     <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center">
       <div className="relative w-full h-full max-w-6xl max-h-[90vh]">
-        <video
-          ref={remoteVideoRef}
-          autoPlay
-          playsInline
-          className="w-full h-full object-cover"
-        />
+        {hasRemoteStream ? (
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <div className="w-full h-full bg-gray-900 flex items-center justify-center">
+            <div className="text-center">
+              <p className="text-white text-xl mb-4">
+                {connectionState === "initial" || connectionState === "connecting"
+                  ? "Connecting..."
+                  : "Waiting for remote video..."}
+              </p>
+              {connectionState === "connected" || connectionState === "completed" ? (
+                <p className="text-green-400 text-sm">Connected - Waiting for video</p>
+              ) : (
+                <p className="text-yellow-400 text-sm">
+                  State: {connectionState}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
-        <div className="absolute bottom-4 right-4 w-64 h-48 rounded-lg overflow-hidden border-2 border-white">
+        <div className="absolute bottom-4 right-4 w-64 h-48 rounded-lg overflow-hidden border-2 border-white bg-gray-900">
           <video
             ref={localVideoRef}
             autoPlay
@@ -171,6 +273,11 @@ export default function VideoCall({ conversation, onClose }) {
             muted
             className="w-full h-full object-cover"
           />
+          {!localStream && (
+            <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
+              <p className="text-white text-xs">Loading camera...</p>
+            </div>
+          )}
         </div>
 
         <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-4">
@@ -183,8 +290,14 @@ export default function VideoCall({ conversation, onClose }) {
         </div>
 
         {error && (
-          <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-4 py-2 rounded">
+          <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-600 text-white px-4 py-2 rounded max-w-md">
             {error}
+          </div>
+        )}
+
+        {connectionState && (
+          <div className="absolute top-20 left-1/2 transform -translate-x-1/2 bg-gray-800 text-gray-200 px-3 py-1 rounded text-xs">
+            {connectionState}
           </div>
         )}
       </div>
