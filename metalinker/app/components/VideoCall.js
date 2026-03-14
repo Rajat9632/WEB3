@@ -11,6 +11,8 @@ export default function VideoCall({ conversation, onClose }) {
   const [connectionState, setConnectionState] = useState("initial");
   const [hasRemoteStream, setHasRemoteStream] = useState(false);
   const connectionTimeoutRef = useRef(null);
+  const iceCandidatesRef = useRef([]); // Buffer for ICE candidates
+  const remoteDescriptionSetRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -102,10 +104,17 @@ export default function VideoCall({ conversation, onClose }) {
           }
 
           try {
+            const candidateData = {
+              candidate: event.candidate.candidate,
+              sdpMLineIndex: event.candidate.sdpMLineIndex,
+              sdpMid: event.candidate.sdpMid,
+            };
+
+            console.log("Sending ICE candidate:", candidateData);
             await conversation.send(
               JSON.stringify({
                 type: "ice-candidate",
-                candidate: event.candidate,
+                candidate: candidateData,
               })
             );
           } catch (err) {
@@ -114,27 +123,38 @@ export default function VideoCall({ conversation, onClose }) {
         };
 
         if (conversation) {
-          const offer = await nextPeerConnection.createOffer();
-          await nextPeerConnection.setLocalDescription(offer);
-          await conversation.send(
-            JSON.stringify({
-              type: "offer",
-              offer: {
-                type: offer.type,
-                sdp: offer.sdp,
-              },
-            })
-          );
+          try {
+            const offer = await nextPeerConnection.createOffer({
+              offerToReceiveAudio: true,
+              offerToReceiveVideo: true,
+            });
+            await nextPeerConnection.setLocalDescription(offer);
 
-          // Set timeout for connection establishment
-          connectionTimeoutRef.current = setTimeout(() => {
-            if (
-              nextPeerConnection.connectionState !== "connected" &&
-              nextPeerConnection.connectionState !== "completed"
-            ) {
-              setError("Connection timeout. The other party may be offline.");
-            }
-          }, 30000); // 30 second timeout
+            console.log("Sending offer");
+            await conversation.send(
+              JSON.stringify({
+                type: "offer",
+                offer: {
+                  type: offer.type,
+                  sdp: offer.sdp,
+                },
+              })
+            );
+            console.log("Offer sent successfully");
+
+            // Set timeout for connection establishment
+            connectionTimeoutRef.current = setTimeout(() => {
+              if (
+                nextPeerConnection.connectionState !== "connected" &&
+                nextPeerConnection.connectionState !== "completed"
+              ) {
+                setError("Connection timeout. The other party may be offline.");
+              }
+            }, 30000); // 30 second timeout
+          } catch (err) {
+            console.error("Error creating/sending offer:", err);
+            setError(`Failed to create offer: ${err.message}`);
+          }
         }
       } catch (err) {
         console.error("Call initialization error:", err);
@@ -151,6 +171,22 @@ export default function VideoCall({ conversation, onClose }) {
       }
     };
   }, [conversation]);
+
+  // Helper function to add buffered ICE candidates
+  const flushIceCandidates = async (pc) => {
+    console.log(`Flushing ${iceCandidatesRef.current.length} buffered ICE candidates`);
+    const candidates = iceCandidatesRef.current;
+    iceCandidatesRef.current = [];
+
+    for (const candidateData of candidates) {
+      try {
+        const iceCandidate = new RTCIceCandidate(candidateData);
+        await pc.addIceCandidate(iceCandidate);
+      } catch (err) {
+        console.debug("Error adding buffered ICE candidate:", err.message);
+      }
+    }
+  };
 
   useEffect(() => {
     if (!conversation || !peerConnection) {
@@ -173,42 +209,67 @@ export default function VideoCall({ conversation, onClose }) {
             const data = JSON.parse(message.content);
 
             if (data.type === "offer") {
-              console.log("Received offer");
-              await peerConnection.setRemoteDescription(
-                new RTCSessionDescription({
-                  type: "offer",
-                  sdp: data.offer.sdp || data.offer,
-                })
-              );
-              const answer = await peerConnection.createAnswer();
-              await peerConnection.setLocalDescription(answer);
-              await conversation.send(
-                JSON.stringify({
-                  type: "answer",
-                  answer: {
-                    type: answer.type,
-                    sdp: answer.sdp,
-                  },
-                })
-              );
-            } else if (data.type === "answer") {
-              console.log("Received answer");
-              await peerConnection.setRemoteDescription(
-                new RTCSessionDescription({
-                  type: "answer",
-                  sdp: data.answer.sdp || data.answer,
-                })
-              );
-            } else if (data.type === "ice-candidate") {
+              console.log("Received offer, setting remote description");
               try {
-                if (data.candidate) {
-                  await peerConnection.addIceCandidate(
-                    new RTCIceCandidate(data.candidate)
-                  );
-                }
+                await peerConnection.setRemoteDescription(
+                  new RTCSessionDescription({
+                    type: "offer",
+                    sdp: data.offer.sdp || data.offer,
+                  })
+                );
+                remoteDescriptionSetRef.current = true;
+
+                // Flush buffered ICE candidates
+                await flushIceCandidates(peerConnection);
+
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                const sentAnswer = await conversation.send(
+                  JSON.stringify({
+                    type: "answer",
+                    answer: {
+                      type: answer.type,
+                      sdp: answer.sdp,
+                    },
+                  })
+                );
+                console.log("Answer sent successfully");
               } catch (err) {
-                // ICE candidate errors can be ignored if candidate is late
-                console.debug("ICE candidate error (may be expected):", err.message);
+                console.error("Error handling offer:", err);
+                setError(`Error handling offer: ${err.message}`);
+              }
+            } else if (data.type === "answer") {
+              console.log("Received answer, setting remote description");
+              try {
+                await peerConnection.setRemoteDescription(
+                  new RTCSessionDescription({
+                    type: "answer",
+                    sdp: data.answer.sdp || data.answer,
+                  })
+                );
+                remoteDescriptionSetRef.current = true;
+
+                // Flush buffered ICE candidates
+                await flushIceCandidates(peerConnection);
+              } catch (err) {
+                console.error("Error handling answer:", err);
+                setError(`Error handling answer: ${err.message}`);
+              }
+            } else if (data.type === "ice-candidate") {
+              if (!remoteDescriptionSetRef.current) {
+                // Buffer ICE candidate until remote description is set
+                console.log("Buffering ICE candidate (remote description not yet set)");
+                iceCandidatesRef.current.push(data.candidate);
+              } else {
+                // Directly add ICE candidate if remote description is already set
+                try {
+                  const iceCandidate = new RTCIceCandidate(data.candidate);
+                  await peerConnection.addIceCandidate(iceCandidate);
+                  console.log("ICE candidate added");
+                } catch (err) {
+                  console.debug("Error adding ICE candidate:", err.message);
+                }
               }
             }
           } catch (err) {
